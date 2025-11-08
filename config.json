@@ -1,4 +1,6 @@
 {
   "messageChannel": "",
-  "voiceChannel": ""
+  "voiceChannel": "",
+  "messageLB": "",
+  "voiceLB": ""
 }
