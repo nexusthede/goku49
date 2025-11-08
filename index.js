@@ -1,8 +1,8 @@
 const { Client, GatewayIntentBits, EmbedBuilder, PermissionsBitField } = require("discord.js");
 require("./keep_alive"); // Keep-alive server
 
-// ---------------- CONFIG ----------------
 const ALLOWED_GUILD = "1426789471776542803"; // Only this server
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -18,7 +18,7 @@ const voiceTimes = new Map();
 const voiceJoinTimes = new Map();
 const snipes = new Map();
 const guildConfig = {}; 
-// Structure: { [guildId]: { modRoles: [], jailRole: null, jailChannel: null } }
+// Structure: { [guildId]: { modRoles: [], jailRole: null, jailChannel: null, messageChannel: null, voiceChannel: null } }
 
 // ---------------- READY ----------------
 client.once("ready", () => {
@@ -65,7 +65,16 @@ client.on("voiceStateUpdate", (oldState, newState) => {
   }
 });
 
-// ---------------- LEADERBOARD ----------------
+// ---------------- HELPER ----------------
+function sendEmbed(channel, title, description, success = true) {
+  const embed = new EmbedBuilder()
+    .setTitle(title)
+    .setDescription(description)
+    .setColor(success ? "#00FF00" : "#FF0000")
+    .setFooter({ text: "Utility & Leaderboard Bot" });
+  channel.send({ embeds: [embed] });
+}
+
 function getLeaderboard(data, type) {
   const entries = Object.entries(data)
     .sort((a, b) => b[1] - a[1])
@@ -100,6 +109,7 @@ async function updateLeaderboards() {
   if (!guild) return;
 
   try {
+    const config = guildConfig[guild.id] || {};
     const messageLB = getLeaderboard(messageCounts.get(guild.id) || {}, "messages");
     const voiceLB = getLeaderboard(voiceTimes.get(guild.id) || {}, "voice");
 
@@ -121,8 +131,8 @@ async function updateLeaderboards() {
       .setImage("https://cdn.discordapp.com/attachments/860528686403158046/1108384769147932682/ezgif-2-f41b6758ff.gif")
       .setFooter({ text: "<a:white_butterflies:1436478933339213895> Updates every 5 minutes" });
 
-    const messageChannel = guild.channels.cache.find(ch => ch.name === "message-lb");
-    const voiceChannel = guild.channels.cache.find(ch => ch.name === "voice-lb");
+    const messageChannel = config.messageChannel ? guild.channels.cache.get(config.messageChannel) : guild.channels.cache.find(ch => ch.name === "message-lb");
+    const voiceChannel = config.voiceChannel ? guild.channels.cache.get(config.voiceChannel) : guild.channels.cache.find(ch => ch.name === "voice-lb");
 
     if (messageChannel) {
       const msgs = await messageChannel.messages.fetch({ limit: 1 });
@@ -151,95 +161,115 @@ client.on("messageCreate", async (message) => {
   const cmd = args.shift().toLowerCase();
   const guildId = message.guild.id;
 
-  if (!guildConfig[guildId]) guildConfig[guildId] = { modRoles: [], jailRole: null, jailChannel: null };
+  if (!guildConfig[guildId]) guildConfig[guildId] = { modRoles: [], jailRole: null, jailChannel: null, messageChannel: null, voiceChannel: null };
   const config = guildConfig[guildId];
 
   // ---------- CONFIG COMMANDS ----------
   if (cmd === "setmodrole") {
     if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator))
-      return message.reply("<:x_markv:1431619387168657479> Admin only.");
+      return sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> Admin only", false);
     const role = message.mentions.roles.first();
-    if (!role) return message.reply("<:x_markv:1431619387168657479> Mention a role to set as mod role.");
+    if (!role) return sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> Mention a role", false);
     if (!config.modRoles.includes(role.id)) config.modRoles.push(role.id);
-    return message.reply(`<:check_markv:1431619384987615383> ${role.name} added as mod role.`);
+    return sendEmbed(message.channel, "Success", `<:check_markv:1431619384987615383> ${role.name} added as mod role`);
   }
 
   if (cmd === "setjailrole") {
     if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator))
-      return message.reply("<:x_markv:1431619387168657479> Admin only.");
+      return sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> Admin only", false);
     const role = message.mentions.roles.first();
-    if (!role) return message.reply("<:x_markv:1431619387168657479> Mention a role to set as jail role.");
+    if (!role) return sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> Mention a role", false);
     config.jailRole = role.id;
-    return message.reply(`<:check_markv:1431619384987615383> ${role.name} set as jail role.`);
+    return sendEmbed(message.channel, "Success", `<:check_markv:1431619384987615383> ${role.name} set as jail role`);
   }
 
   if (cmd === "setjailchannel") {
     if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator))
-      return message.reply("<:x_markv:1431619387168657479> Admin only.");
+      return sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> Admin only", false);
     const channel = message.mentions.channels.first();
-    if (!channel) return message.reply("<:x_markv:1431619387168657479> Mention a channel to set as jail channel.");
+    if (!channel) return sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> Mention a channel", false);
     config.jailChannel = channel.id;
-    return message.reply(`<:check_markv:1431619384987615383> ${channel.name} set as jail channel.`);
+    return sendEmbed(message.channel, "Success", `<:check_markv:1431619384987615383> ${channel.name} set as jail channel`);
+  }
+
+  // ---------- LEADERBOARD CHANNELS ----------
+  if (cmd === "setmessagechannel") {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator))
+      return sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> Admin only", false);
+    const channel = message.mentions.channels.first();
+    if (!channel) return sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> Mention a channel", false);
+    config.messageChannel = channel.id;
+    return sendEmbed(message.channel, "Success", `<:check_markv:1431619384987615383> ${channel.name} set as message leaderboard channel`);
+  }
+
+  if (cmd === "setvoicechannel") {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator))
+      return sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> Admin only", false);
+    const channel = message.mentions.channels.first();
+    if (!channel) return sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> Mention a channel", false);
+    config.voiceChannel = channel.id;
+    return sendEmbed(message.channel, "Success", `<:check_markv:1431619384987615383> ${channel.name} set as voice leaderboard channel`);
   }
 
   // ---------- UTILITY COMMANDS ----------
   if (cmd === "snipe") {
     const snipeData = snipes.get(message.guild.id);
-    if (!snipeData) return message.reply("No deleted messages to snipe.");
-    return message.channel.send(`Last deleted message by **${snipeData.author}**: ${snipeData.content}`);
+    if (!snipeData) return sendEmbed(message.channel, "Error", "No deleted messages to snipe", false);
+    return sendEmbed(message.channel, "Sniped Message", `**${snipeData.author}**: ${snipeData.content}`);
   }
 
-  if (cmd === "messages") updateLeaderboards();
-  if (cmd === "voice") updateLeaderboards();
-  if (cmd === "update") updateLeaderboards();
+  if (cmd === "messages" || cmd === "voice" || cmd === "update") {
+    updateLeaderboards();
+    return sendEmbed(message.channel, "Success", "<:check_markv:1431619384987615383> Leaderboards updated");
+  }
 
   // ---------- MODERATION COMMANDS ----------
   const isMod = message.member.roles.cache.some(r => config.modRoles.includes(r.id));
-
   if (!isMod && ["kick","ban","mute","unmute","role"].includes(cmd)) 
-    return message.reply("<:x_markv:1431619387168657479> You need mod role to run this command.");
+    return sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> You need mod role to run this command", false);
 
   if (cmd === "kick") {
     const member = message.mentions.members.first();
-    if (!member) return message.reply("<:x_markv:1431619387168657479> Mention a user to kick.");
+    if (!member) return sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> Mention a user", false);
     const reason = args.join(" ") || "No reason provided";
-    await member.kick(reason).catch(() => message.reply("<:x_markv:1431619387168657479> Could not kick user."));
-    return message.reply(`<:check_markv:1431619384987615383> Kicked ${member.user.tag}`);
+    await member.kick(reason).catch(() => sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> Could not kick user", false));
+    return sendEmbed(message.channel, "Success", `<:check_markv:1431619384987615383> Kicked ${member.user.tag}`);
   }
 
   if (cmd === "ban") {
     const member = message.mentions.members.first();
-    if (!member) return message.reply("<:x_markv:1431619387168657479> Mention a user to ban.");
+    if (!member) return sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> Mention a user", false);
     const reason = args.join(" ") || "No reason provided";
-    await member.ban({ reason }).catch(() => message.reply("<:x_markv:1431619387168657479> Could not ban user."));
-    return message.reply(`<:check_markv:1431619384987615383> Banned ${member.user.tag}`);
+    await member.ban({ reason }).catch(() => sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> Could not ban user", false));
+    return sendEmbed(message.channel, "Success", `<:check_markv:1431619384987615383> Banned ${member.user.tag}`);
   }
 
   if (cmd === "mute") {
     const member = message.mentions.members.first();
-    if (!member) return message.reply("<:x_markv:1431619387168657479> Mention a user to mute.");
-    if (!config.jailRole) return message.reply("<:x_markv:1431619387168657479> Jail role not set.");
-    await member.roles.add(config.jailRole).catch(() => message.reply("<:x_markv:1431619387168657479> Could not add jail role."));
-    return message.reply(`<:check_markv:1431619384987615383> Muted ${member.user.tag}`);
+    if (!member) return sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> Mention a user", false);
+    if (!config.jailRole) return sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> Jail role not set", false);
+    await member.roles.add(config.jailRole).catch(() => sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> Could not add jail role", false));
+    return sendEmbed(message.channel, "Success", `<:check_markv:1431619384987615383> Muted ${member.user.tag}`);
   }
 
   if (cmd === "unmute") {
     const member = message.mentions.members.first();
-    if (!member) return message.reply("<:x_markv:1431619387168657479> Mention a user to unmute.");
-    if (!config.jailRole) return message.reply("<:x_markv:1431619387168657479> Jail role not set.");
-    await member.roles.remove(config.jailRole).catch(() => message.reply("<:x_markv:1431619387168657479> Could not remove jail role."));
-    return message.reply(`<:check_markv:1431619384987615383> Unmuted ${member.user.tag}`);
+    if (!member) return sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> Mention a user", false);
+    if (!config.jailRole) return sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> Jail role not set", false);
+    await member.roles.remove(config.jailRole).catch(() => sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> Could not remove jail role", false));
+    return sendEmbed(message.channel, "Success", `<:check_markv:1431619384987615383> Unmuted ${member.user.tag}`);
   }
 
   if (cmd === "role") {
     if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator))
-      return message.reply("<:x_markv:1431619387168657479> Admin only.");
+      return sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> Admin only", false);
     const user = message.mentions.members.first();
     const role = message.mentions.roles.first();
-    if (!user || !role) return message.reply("<:x_markv:1431619387168657479> Usage: +role @user @role");
-    await user.roles.add(role).catch(() => message.reply("<:x_markv:1431619387168657479> Could not add role."));
-    return message.reply(`<:check_markv:1431619384987615383> Added role ${role.name} to ${user.user.tag}`);
+    if (!user || !role) return sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> Usage: +role @user @role", false);
+    await user.roles.add(role).catch(() => sendEmbed(message.channel, "Error", "<:x_markv:1431619387168657479> Could not add role", false));
+    return sendEmbed(message.channel, "Success", `<:check_markv:1431619384987615383> Added role ${role.name} to ${user.user.tag}`);
   }
+
 });
 
 // ---------------- LOGIN ----------------
