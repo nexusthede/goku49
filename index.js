@@ -1,6 +1,7 @@
-const { Client, GatewayIntentBits, EmbedBuilder } = require("discord.js");
+// index.js
 const fs = require("fs");
-require("./keep_alive");
+const { Client, GatewayIntentBits, EmbedBuilder } = require("discord.js");
+const express = require("express");
 
 const client = new Client({
   intents: [
@@ -8,16 +9,16 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildVoiceStates
-  ]
+  ],
 });
 
-// Load config and DB
-let config = JSON.parse(fs.readFileSync("./config.json", "utf8"));
-let db = JSON.parse(fs.readFileSync("./database/db.json", "utf8"));
+// ===== Config =====
+const TOKEN = process.env.TOKEN; // Set this in Render environment
+const MESSAGE_LB_FILE = "./database/messages.json";
+const VOICE_LB_FILE = "./database/voice.json";
 
-// Custom emojis
+// ===== Custom emojis =====
 const numberEmojis = [
-  "<a:vnumber0:1433892272478359804>",
   "<a:vnumber1:1433892245978742845>",
   "<a:vnumber2:1433892250546475099>",
   "<a:vnumber3:1433892253423763476>",
@@ -26,152 +27,126 @@ const numberEmojis = [
   "<a:vnumber6:1433892261820760165>",
   "<a:vnumber7:1433892263867453560>",
   "<a:vnumber8:1433892266539356231>",
-  "<a:vnumber9:1433892269101944863>"
+  "<a:vnumber9:1433892269101944863>",
 ];
-
 const arrowEmoji = "<a:pink_arrow:1436464220576415824>";
 const voiceEmoji = "🔊";
 
-function saveDB() {
-  fs.writeFileSync("./database/db.json", JSON.stringify(db, null, 2));
+// ===== Data =====
+let messageLB = {};
+let voiceLB = {};
+let messageLBChannel;
+let voiceLBChannel;
+
+if (fs.existsSync(MESSAGE_LB_FILE)) messageLB = JSON.parse(fs.readFileSync(MESSAGE_LB_FILE));
+if (fs.existsSync(VOICE_LB_FILE)) voiceLB = JSON.parse(fs.readFileSync(VOICE_LB_FILE));
+
+// ===== Helpers =====
+function saveLB() {
+  fs.writeFileSync(MESSAGE_LB_FILE, JSON.stringify(messageLB, null, 2));
+  fs.writeFileSync(VOICE_LB_FILE, JSON.stringify(voiceLB, null, 2));
 }
 
-function saveConfig() {
-  fs.writeFileSync("./config.json", JSON.stringify(config, null, 2));
-}
+function generateLeaderboardDescription(topUsers, type) {
+  if (!topUsers || topUsers.length === 0) return "No data yet.";
 
-// --- Track Messages ---
-client.on("messageCreate", message => {
-  if (!message.guild || message.author.bot) return;
-
-  if (!db.messages[message.author.id]) {
-    db.messages[message.author.id] = { guildId: message.guild.id, tag: message.author.tag, messages: 0 };
-  }
-  db.messages[message.author.id].messages += 1;
-  db.messages[message.author.id].tag = message.author.tag;
-
-  saveDB();
-});
-
-// --- Track Voice Minutes ---
-client.on("voiceStateUpdate", (oldState, newState) => {
-  if (newState.member.user.bot) return;
-
-  const userId = newState.member.id;
-
-  // Join VC
-  if (!oldState.channel && newState.channel) {
-    if (!db.voice[userId]) db.voice[userId] = { guildId: newState.guild.id, tag: newState.member.user.tag, joinedAt: Date.now(), voiceMinutes: 0 };
-    else db.voice[userId].joinedAt = Date.now();
-  }
-
-  // Leave VC
-  if (oldState.channel && !newState.channel) {
-    if (db.voice[userId] && db.voice[userId].joinedAt) {
-      const mins = Math.floor((Date.now() - db.voice[userId].joinedAt) / 60000);
-      db.voice[userId].voiceMinutes += mins;
-      db.voice[userId].joinedAt = null;
-      db.voice[userId].tag = newState.member.user.tag;
-      saveDB();
+  return topUsers.map((u, i) => {
+    let emoji = "";
+    if (i === 9) {
+      // 10th place = 1 + 0 emojis
+      emoji = "<a:vnumber1:1433892245978742845><a:vnumber0:1433892272478350090>";
+    } else {
+      emoji = numberEmojis[i];
     }
-  }
-});
 
-// --- Get top users ---
-function getTop(type, guildId) {
-  const data = Object.values(db[type]).filter(u => u.guildId === guildId);
-  return data.sort((a, b) => {
-    const aVal = type === "messages" ? a.messages : a.voiceMinutes;
-    const bVal = type === "messages" ? b.messages : b.voiceMinutes;
-    return bVal - aVal;
-  }).slice(0, 10);
+    const separator = type === "messages" ? arrowEmoji : voiceEmoji;
+    const value = type === "messages" ? `${u.messages} messages` : `${u.voiceMinutes} mins`;
+
+    return `${emoji} \`${u.tag}\` ${separator} ${value}`;
+  }).join("\n");
 }
 
-// --- Send or Edit Leaderboard ---
-async function sendOrEditLeaderboard(channel, type, topUsers) {
-  const description = topUsers.length
-    ? topUsers.map((u, i) => {
-        const emoji = numberEmojis[i] || numberEmojis[numberEmojis.length - 1];
-        const separator = type === "messages" ? arrowEmoji : voiceEmoji;
-        const value = type === "messages" ? `${u.messages} messages` : `${u.voiceMinutes} mins`;
-        return `${emoji} \`${u.tag}\` ${separator} ${value}`;
-      }).join("\n")
-    : "No data yet.";
+// ===== Post or update leaderboard embed =====
+async function sendLeaderboardEmbed(channel, usersData, type) {
+  const sorted = Object.values(usersData)
+    .sort((a, b) => (type === "messages" ? b.messages - a.messages : b.voiceMinutes - a.voiceMinutes))
+    .slice(0, 10);
+
+  const description = generateLeaderboardDescription(sorted, type);
+
+  const messages = await channel.messages.fetch({ limit: 50 });
+  let lbMessage = messages.find(m => m.author.id === client.user.id && m.embeds.length > 0);
 
   const embed = new EmbedBuilder()
-    .setTitle(type === "messages" ? "Message Leaderboard" : "Voice Leaderboard")
-    .setAuthor({ name: channel.guild.name, iconURL: channel.guild.iconURL({ dynamic: true }) })
-    .setThumbnail(channel.guild.iconURL({ dynamic: true }))
-    .setColor("#FF69B4")
-    .setDescription(`${description}\n\n<a:white_butterflies:1436478933339213895> Updates every 5 minutes`);
+    .setAuthor({ name: channel.guild.name, iconURL: channel.guild.iconURL() })
+    .setThumbnail(channel.guild.iconURL())
+    .setColor("#FFB6C1") // light pink
+    .setDescription(description + `\n<a:white_butterflies:1436478933339213895> **Updates every 5 minutes**`);
 
-  const msgId = type === "messages" ? config.messageLB : config.voiceLB;
-
-  try {
-    if (msgId) {
-      const msg = await channel.messages.fetch(msgId);
-      await msg.edit({ embeds: [embed] });
-    } else {
-      const msg = await channel.send({ embeds: [embed] });
-      if (type === "messages") config.messageLB = msg.id;
-      else config.voiceLB = msg.id;
-      saveConfig();
-    }
-  } catch {
-    const msg = await channel.send({ embeds: [embed] });
-    if (type === "messages") config.messageLB = msg.id;
-    else config.voiceLB = msg.id;
-    saveConfig();
+  if (lbMessage) {
+    await lbMessage.edit({ embeds: [embed] });
+  } else {
+    await channel.send({ embeds: [embed] });
   }
 }
 
-// --- Commands ---
-client.on("messageCreate", async message => {
+// ===== Commands =====
+client.on("messageCreate", async (message) => {
   if (!message.guild || message.author.bot) return;
-  if (!message.content.startsWith("+")) return;
 
-  const args = message.content.slice(1).trim().split(/ +/g);
+  const prefix = "+";
+  if (!message.content.startsWith(prefix)) return;
+
+  const args = message.content.slice(prefix.length).trim().split(/ +/);
   const command = args.shift().toLowerCase();
 
-  if (command === "postlb") {
-    const messageChannel = client.channels.cache.get(config.messageChannel) || message.channel;
-    const voiceChannel = client.channels.cache.get(config.voiceChannel) || message.channel;
-
-    const topMessages = getTop("messages", message.guild.id);
-    const topVoice = getTop("voice", message.guild.id);
-
-    if (messageChannel) sendOrEditLeaderboard(messageChannel, "messages", topMessages);
-    if (voiceChannel) sendOrEditLeaderboard(voiceChannel, "voice", topVoice);
-  }
-
   if (command === "set") {
-    const type = args[0]; // messages / voice
-    const channel = message.mentions.channels.first();
-    if (!channel) return message.reply("Mention a channel to set.");
-
-    if (type === "messages") config.messageChannel = channel.id;
-    else if (type === "voice") config.voiceChannel = channel.id;
-    else return message.reply("Use `messages` or `voice`");
-
-    saveConfig();
-    message.reply(`Set ${type} channel to ${channel.name}`);
+    if (args[0] === "messages" && message.mentions.channels.first()) {
+      messageLBChannel = message.mentions.channels.first().id;
+      message.channel.send("Message leaderboard channel set.");
+    } else if (args[0] === "voice" && message.mentions.channels.first()) {
+      voiceLBChannel = message.mentions.channels.first().id;
+      message.channel.send("Voice leaderboard channel set.");
+    }
+  } else if (command === "postlb") {
+    if (messageLBChannel) sendLeaderboardEmbed(message.guild.channels.cache.get(messageLBChannel), messageLB, "messages");
+    if (voiceLBChannel) sendLeaderboardEmbed(message.guild.channels.cache.get(messageLBChannel), voiceLB, "voice");
   }
 });
 
-// --- Auto-update every 5 minutes ---
+// ===== Track messages =====
+client.on("messageCreate", message => {
+  if (!message.guild || message.author.bot) return;
+  if (!messageLB[message.author.id]) messageLB[message.author.id] = { tag: message.author.tag, messages: 0 };
+  messageLB[message.author.id].messages += 1;
+  saveLB();
+});
+
+// ===== Track voice =====
+client.on("voiceStateUpdate", (oldState, newState) => {
+  if (!newState.guild) return;
+  const member = newState.member;
+  if (!member) return;
+
+  // You can replace 1 with actual time tracking in minutes if desired
+  const timeInMinutes = 1; 
+  if (!voiceLB[member.id]) voiceLB[member.id] = { tag: member.user.tag, voiceMinutes: 0 };
+  voiceLB[member.id].voiceMinutes += timeInMinutes;
+  saveLB();
+});
+
+// ===== Auto-update every 5 minutes =====
 setInterval(() => {
   client.guilds.cache.forEach(guild => {
-    const messageChannel = client.channels.cache.get(config.messageChannel);
-    const voiceChannel = client.channels.cache.get(config.voiceChannel);
-    if (!messageChannel || !voiceChannel) return;
-
-    const topMessages = getTop("messages", guild.id);
-    const topVoice = getTop("voice", guild.id);
-
-    sendOrEditLeaderboard(messageChannel, "messages", topMessages);
-    sendOrEditLeaderboard(voiceChannel, "voice", topVoice);
+    if (messageLBChannel) sendLeaderboardEmbed(guild.channels.cache.get(messageLBChannel), messageLB, "messages");
+    if (voiceLBChannel) sendLeaderboardEmbed(guild.channels.cache.get(messageLBChannel), voiceLB, "voice");
   });
 }, 5 * 60 * 1000);
 
-// --- Login ---
-client.login(process.env.TOKEN);
+// ===== Keep Alive (Render-friendly) =====
+const app = express();
+app.get("/", (req, res) => res.send("Bot is running!"));
+app.listen(process.env.PORT || 3000);
+
+// ===== Login =====
+client.login(TOKEN);
