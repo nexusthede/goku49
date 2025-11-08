@@ -16,6 +16,7 @@ const client = new Client({
 const TOKEN = process.env.TOKEN; // Set this in Render environment
 const MESSAGE_LB_FILE = "./database/messages.json";
 const VOICE_LB_FILE = "./database/voice.json";
+const ALLOWED_GUILD = "1426789471776542803"; // Whitelisted server ID
 
 // ===== Custom emojis =====
 const numberEmojis = [
@@ -30,13 +31,13 @@ const numberEmojis = [
   "<a:vnumber9:1433892269101944863>",
 ];
 const arrowEmoji = "<a:pink_arrow:1436464220576415824>";
-const voiceEmoji = "🔊";
 
 // ===== Data =====
 let messageLB = {};
 let voiceLB = {};
 let messageLBChannel;
 let voiceLBChannel;
+const vcJoinTimes = {}; // Track members currently in VC
 
 if (fs.existsSync(MESSAGE_LB_FILE)) messageLB = JSON.parse(fs.readFileSync(MESSAGE_LB_FILE));
 if (fs.existsSync(VOICE_LB_FILE)) voiceLB = JSON.parse(fs.readFileSync(VOICE_LB_FILE));
@@ -53,13 +54,12 @@ function generateLeaderboardDescription(topUsers, type) {
   return topUsers.map((u, i) => {
     let emoji = "";
     if (i === 9) {
-      // 10th place = 1 + 0 emojis
-      emoji = "<a:vnumber1:1433892245978742845><a:vnumber0:1433892272478350090>";
+      emoji = "<a:vnumber1:1433892245978742845><a:vnumber0:1433892272478350090>"; // 10th place
     } else {
       emoji = numberEmojis[i];
     }
 
-    const separator = type === "messages" ? arrowEmoji : voiceEmoji;
+    const separator = arrowEmoji;
     const value = type === "messages" ? `${u.messages} messages` : `${u.voiceMinutes} mins`;
 
     return `${emoji} \`${u.tag}\` ${separator} ${value}`;
@@ -94,6 +94,7 @@ async function sendLeaderboardEmbed(channel, usersData, type) {
 // ===== Commands =====
 client.on("messageCreate", async (message) => {
   if (!message.guild || message.author.bot) return;
+  if (message.guild.id !== ALLOWED_GUILD) return; // Whitelist check
 
   const prefix = "+";
   if (!message.content.startsWith(prefix)) return;
@@ -110,14 +111,22 @@ client.on("messageCreate", async (message) => {
       message.channel.send("Voice leaderboard channel set.");
     }
   } else if (command === "postlb") {
-    if (messageLBChannel) sendLeaderboardEmbed(message.guild.channels.cache.get(messageLBChannel), messageLB, "messages");
-    if (voiceLBChannel) sendLeaderboardEmbed(message.guild.channels.cache.get(messageLBChannel), voiceLB, "voice");
+    if (messageLBChannel) {
+      const msgChannel = message.guild.channels.cache.get(messageLBChannel);
+      if (msgChannel) sendLeaderboardEmbed(msgChannel, messageLB, "messages");
+    }
+    if (voiceLBChannel) {
+      const vcChannel = message.guild.channels.cache.get(voiceLBChannel);
+      if (vcChannel) sendLeaderboardEmbed(vcChannel, voiceLB, "voice");
+    }
   }
 });
 
 // ===== Track messages =====
 client.on("messageCreate", message => {
   if (!message.guild || message.author.bot) return;
+  if (message.guild.id !== ALLOWED_GUILD) return;
+
   if (!messageLB[message.author.id]) messageLB[message.author.id] = { tag: message.author.tag, messages: 0 };
   messageLB[message.author.id].messages += 1;
   saveLB();
@@ -125,23 +134,63 @@ client.on("messageCreate", message => {
 
 // ===== Track voice =====
 client.on("voiceStateUpdate", (oldState, newState) => {
-  if (!newState.guild) return;
-  const member = newState.member;
-  if (!member) return;
+  if (!newState.guild || newState.guild.id !== ALLOWED_GUILD) return;
 
-  const timeInMinutes = 1;
-  if (!voiceLB[member.id]) voiceLB[member.id] = { tag: member.user.tag, voiceMinutes: 0 };
-  voiceLB[member.id].voiceMinutes += timeInMinutes;
-  saveLB();
+  const memberId = newState.member.id;
+
+  // Joined VC
+  if (!oldState.channel && newState.channel) {
+    vcJoinTimes[memberId] = Date.now();
+    if (!voiceLB[memberId]) voiceLB[memberId] = { tag: newState.member.user.tag, voiceMinutes: 0 };
+  }
+
+  // Left VC
+  if (oldState.channel && !newState.channel && vcJoinTimes[memberId]) {
+    const diff = Date.now() - vcJoinTimes[memberId];
+    voiceLB[memberId].voiceMinutes += Math.floor(diff / 60000);
+    saveLB();
+    delete vcJoinTimes[memberId];
+  }
+
+  // Switch VC channels
+  if (oldState.channel && newState.channel && oldState.channel.id !== newState.channel.id) {
+    vcJoinTimes[memberId] = Date.now();
+  }
 });
 
-// ===== Auto-update every 5 minutes =====
+// Increment voice minutes every minute for members still in VC
+setInterval(() => {
+  for (const memberId in vcJoinTimes) {
+    if (!voiceLB[memberId]) continue;
+    voiceLB[memberId].voiceMinutes += 1;
+  }
+  saveLB();
+}, 60 * 1000);
+
+// ===== Auto-update leaderboard every 5 minutes =====
 setInterval(() => {
   client.guilds.cache.forEach(guild => {
-    if (messageLBChannel) sendLeaderboardEmbed(guild.channels.cache.get(messageLBChannel), messageLB, "messages");
-    if (voiceLBChannel) sendLeaderboardEmbed(guild.channels.cache.get(messageLBChannel), voiceLB, "voice");
+    if (guild.id !== ALLOWED_GUILD) return;
+
+    if (messageLBChannel) {
+      const msgChannel = guild.channels.cache.get(messageLBChannel);
+      if (msgChannel) sendLeaderboardEmbed(msgChannel, messageLB, "messages");
+    }
+    if (voiceLBChannel) {
+      const vcChannel = guild.channels.cache.get(voiceLBChannel);
+      if (vcChannel) sendLeaderboardEmbed(vcChannel, voiceLB, "voice");
+    }
   });
 }, 5 * 60 * 1000);
+
+// ===== Leave unauthorized servers =====
+client.on("guildCreate", guild => {
+  if (guild.id !== ALLOWED_GUILD) {
+    guild.leave()
+      .then(() => console.log(`Left unauthorized server: ${guild.name}`))
+      .catch(console.error);
+  }
+});
 
 // ===== Keep Alive (Render-friendly) =====
 const app = express();
