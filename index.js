@@ -53,17 +53,21 @@ function getTop(type, guildId) {
 
 // Send leaderboard embed
 function sendLeaderboardEmbed(channel, type, topUsers) {
+  const description = topUsers.length
+    ? topUsers.map((u, i) => {
+        const emoji = numberEmojis[i] || numberEmojis[numberEmojis.length - 1];
+        const separator = type === "messages" ? arrowEmoji : voiceEmoji;
+        const value = type === "messages" ? `${u.messages} messages` : `${u.voiceMinutes} mins`;
+        return `${emoji} \`${u.tag}\` ${separator} ${value}`;
+      }).join("\n")
+    : "No data yet.";
+
   const embed = new EmbedBuilder()
     .setTitle(type === "messages" ? "Message Leaderboard" : "Voice Leaderboard")
     .setAuthor({ name: channel.guild.name, iconURL: channel.guild.iconURL({ dynamic: true }) })
     .setThumbnail(channel.guild.iconURL({ dynamic: true }))
     .setColor("#FF69B4")
-    .setDescription(topUsers.map((u, i) => {
-      const emoji = numberEmojis[i];
-      const separator = type === "messages" ? arrowEmoji : voiceEmoji;
-      const value = type === "messages" ? `${u.messages} messages` : `${u.voiceMinutes} mins`;
-      return `${emoji} \`${u.tag}\` ${separator} ${value}`;
-    }).join("\n"))
+    .setDescription(description)
     .setFooter({ text: `${footerEmoji} Updates every 5 minutes` });
 
   channel.send({ embeds: [embed] });
