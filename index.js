@@ -79,6 +79,7 @@ async function sendLeaderboardEmbed(channel, usersData, type) {
 
   const embed = new EmbedBuilder()
     .setAuthor({ name: channel.guild.name, iconURL: channel.guild.iconURL() })
+    .setTitle(type === "messages" ? "Message Leaderboard" : "Voice Leaderboard")
     .setThumbnail(channel.guild.iconURL())
     .setColor("#FFB6C1") // light pink
     .setDescription(description + `\n<a:white_butterflies:1436478933339213895> **Updates every 5 minutes**`);
@@ -128,8 +129,7 @@ client.on("voiceStateUpdate", (oldState, newState) => {
   const member = newState.member;
   if (!member) return;
 
-  // You can replace 1 with actual time tracking in minutes if desired
-  const timeInMinutes = 1; 
+  const timeInMinutes = 1;
   if (!voiceLB[member.id]) voiceLB[member.id] = { tag: member.user.tag, voiceMinutes: 0 };
   voiceLB[member.id].voiceMinutes += timeInMinutes;
   saveLB();
