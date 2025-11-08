@@ -62,7 +62,7 @@ function sendLeaderboardEmbed(channel, type, topUsers) {
       const emoji = numberEmojis[i];
       const separator = type === "messages" ? arrowEmoji : voiceEmoji;
       const value = type === "messages" ? `${u.messages} messages` : `${u.voiceMinutes} mins`;
-      return `${emoji} ${u.tag} ${separator} ${value}`;
+      return `${emoji} \`${u.tag}\` ${separator} ${value}`;
     }).join("\n"))
     .setFooter({ text: `${footerEmoji} Updates every 5 minutes` });
 
@@ -79,6 +79,7 @@ client.on("messageCreate", async message => {
 
   const db = loadDB();
 
+  // POST BOTH LEADERBOARDS
   if (command === "postlb") {
     const topMessages = getTop("messages", message.guild.id);
     const topVoice = getTop("voice", message.guild.id);
@@ -86,31 +87,37 @@ client.on("messageCreate", async message => {
     const messageChannel = client.channels.cache.get(config.messageChannel) || message.channel;
     const voiceChannel = client.channels.cache.get(config.voiceChannel) || message.channel;
 
-    sendLeaderboardEmbed(messageChannel, "messages", topMessages);
-    sendLeaderboardEmbed(voiceChannel, "voice", topVoice);
+    if (messageChannel) sendLeaderboardEmbed(messageChannel, "messages", topMessages);
+    if (voiceChannel) sendLeaderboardEmbed(voiceChannel, "voice", topVoice);
   }
 
+  // MESSAGE LB
   if (command === "messages") {
     const topMessages = getTop("messages", message.guild.id);
     const messageChannel = client.channels.cache.get(config.messageChannel) || message.channel;
     sendLeaderboardEmbed(messageChannel, "messages", topMessages);
   }
 
+  // VOICE LB
   if (command === "voice") {
     const topVoice = getTop("voice", message.guild.id);
     const voiceChannel = client.channels.cache.get(config.voiceChannel) || message.channel;
     sendLeaderboardEmbed(voiceChannel, "voice", topVoice);
   }
 
+  // MANUAL UPDATE
   if (command === "update") {
     const topMessages = getTop("messages", message.guild.id);
     const topVoice = getTop("voice", message.guild.id);
+
     const messageChannel = client.channels.cache.get(config.messageChannel) || message.channel;
     const voiceChannel = client.channels.cache.get(config.voiceChannel) || message.channel;
-    sendLeaderboardEmbed(messageChannel, "messages", topMessages);
-    sendLeaderboardEmbed(voiceChannel, "voice", topVoice);
+
+    if (messageChannel) sendLeaderboardEmbed(messageChannel, "messages", topMessages);
+    if (voiceChannel) sendLeaderboardEmbed(voiceChannel, "voice", topVoice);
   }
 
+  // SET MESSAGE CHANNEL (Admin Only)
   if (command === "setmessagechannel") {
     if (!message.member.permissions.has("Administrator")) return message.channel.send("❌ You need Admin permissions");
     const channel = message.mentions.channels.first();
@@ -120,6 +127,7 @@ client.on("messageCreate", async message => {
     message.channel.send(`✅ Message leaderboard channel set to ${channel}`);
   }
 
+  // SET VOICE CHANNEL (Admin Only)
   if (command === "setvoicechannel") {
     if (!message.member.permissions.has("Administrator")) return message.channel.send("❌ You need Admin permissions");
     const channel = message.mentions.channels.first();
@@ -130,7 +138,7 @@ client.on("messageCreate", async message => {
   }
 });
 
-// Auto-update every 5 mins
+// AUTO UPDATE EVERY 5 MINUTES
 setInterval(() => {
   client.guilds.cache.forEach(guild => {
     const topMessages = getTop("messages", guild.id);
@@ -145,6 +153,6 @@ setInterval(() => {
   });
 }, 5 * 60 * 1000);
 
-// Keep alive & login
+// Keep-alive and login
 keepAlive();
 client.login(process.env.TOKEN);
