@@ -16,7 +16,7 @@ const client = new Client({
 const TOKEN = process.env.TOKEN; // Set this in Render environment
 const MESSAGE_LB_FILE = "./database/messages.json";
 const VOICE_LB_FILE = "./database/voice.json";
-const ALLOWED_GUILD = "1426789471776542803"; // Whitelisted server ID
+const ALLOWED_GUILD = "1426789471776542803";
 
 // ===== Custom emojis =====
 const numberEmojis = [
@@ -39,7 +39,7 @@ let messageLBChannel;
 let voiceLBChannel;
 let messageLBMessageId;
 let voiceLBMessageId;
-const vcJoinTimes = {}; // Track members currently in VC
+let vcJoinTimes = {};
 
 if (fs.existsSync(MESSAGE_LB_FILE)) messageLB = JSON.parse(fs.readFileSync(MESSAGE_LB_FILE));
 if (fs.existsSync(VOICE_LB_FILE)) voiceLB = JSON.parse(fs.readFileSync(VOICE_LB_FILE));
@@ -56,12 +56,13 @@ function generateLeaderboardDescription(topUsers, type) {
   return topUsers.map((u, i) => {
     let emoji = "";
     if (i === 9) {
-      emoji = "<a:vnumber1:1433892245978742845><a:vnumber0:1433892272478350090>"; // 10th place
+      // 10th place = 1 + 0 emojis
+      emoji = "<a:vnumber1:1433892245978742845><a:vnumber0:1433892272478350090>";
     } else {
       emoji = numberEmojis[i];
     }
 
-    const separator = arrowEmoji;
+    const separator = type === "messages" ? arrowEmoji : arrowEmoji;
     const value = type === "messages" ? `${u.messages} messages` : `${u.voiceMinutes} mins`;
 
     return `${emoji} \`${u.tag}\` ${separator} ${value}`;
@@ -70,6 +71,22 @@ function generateLeaderboardDescription(topUsers, type) {
 
 // ===== Post or update leaderboard embed =====
 async function sendLeaderboardEmbed(channel, usersData, type) {
+  const now = Date.now();
+
+  // Update voice minutes for users currently in VC
+  if (type === "voice") {
+    for (const memberId in vcJoinTimes) {
+      const joinedAt = vcJoinTimes[memberId];
+      const diffMinutes = Math.floor((now - joinedAt) / 60000);
+      if (!usersData[memberId]) {
+        usersData[memberId] = { tag: "Unknown", voiceMinutes: 0 };
+      }
+      usersData[memberId].voiceMinutes += diffMinutes;
+      vcJoinTimes[memberId] = now; // reset timestamp
+    }
+    saveLB();
+  }
+
   const sorted = Object.values(usersData)
     .sort((a, b) => (type === "messages" ? b.messages - a.messages : b.voiceMinutes - a.voiceMinutes))
     .slice(0, 10);
@@ -80,7 +97,7 @@ async function sendLeaderboardEmbed(channel, usersData, type) {
     .setAuthor({ name: channel.guild.name, iconURL: channel.guild.iconURL() })
     .setTitle(type === "messages" ? "Message Leaderboard" : "Voice Leaderboard")
     .setThumbnail(channel.guild.iconURL())
-    .setColor("#FFB6C1") // light pink
+    .setColor("#FFB6C1")
     .setDescription(description + `\n<a:white_butterflies:1436478933339213895> **Updates every 5 minutes**`);
 
   // Track message ID to prevent duplicates
@@ -107,7 +124,7 @@ async function sendLeaderboardEmbed(channel, usersData, type) {
 // ===== Commands =====
 client.on("messageCreate", async (message) => {
   if (!message.guild || message.author.bot) return;
-  if (message.guild.id !== ALLOWED_GUILD) return; // Whitelist check
+  if (message.guild.id !== ALLOWED_GUILD) return; // whitelist
 
   const prefix = "+";
   if (!message.content.startsWith(prefix)) return;
@@ -124,14 +141,8 @@ client.on("messageCreate", async (message) => {
       message.channel.send("Voice leaderboard channel set.");
     }
   } else if (command === "postlb") {
-    if (messageLBChannel) {
-      const msgChannel = message.guild.channels.cache.get(messageLBChannel);
-      if (msgChannel) sendLeaderboardEmbed(msgChannel, messageLB, "messages");
-    }
-    if (voiceLBChannel) {
-      const vcChannel = message.guild.channels.cache.get(voiceLBChannel);
-      if (vcChannel) sendLeaderboardEmbed(vcChannel, voiceLB, "voice");
-    }
+    if (messageLBChannel) sendLeaderboardEmbed(message.guild.channels.cache.get(messageLBChannel), messageLB, "messages");
+    if (voiceLBChannel) sendLeaderboardEmbed(message.guild.channels.cache.get(voiceLBChannel), voiceLB, "voice");
   }
 });
 
@@ -148,62 +159,35 @@ client.on("messageCreate", message => {
 // ===== Track voice =====
 client.on("voiceStateUpdate", (oldState, newState) => {
   if (!newState.guild || newState.guild.id !== ALLOWED_GUILD) return;
+  const member = newState.member;
+  if (!member) return;
 
-  const memberId = newState.member.id;
-
-  // Joined VC
+  // Member joined VC
   if (!oldState.channel && newState.channel) {
-    vcJoinTimes[memberId] = Date.now();
-    if (!voiceLB[memberId]) voiceLB[memberId] = { tag: newState.member.user.tag, voiceMinutes: 0 };
+    vcJoinTimes[member.id] = Date.now();
   }
 
-  // Left VC
-  if (oldState.channel && !newState.channel && vcJoinTimes[memberId]) {
-    const diff = Date.now() - vcJoinTimes[memberId];
-    voiceLB[memberId].voiceMinutes += Math.floor(diff / 60000);
-    saveLB();
-    delete vcJoinTimes[memberId];
-  }
-
-  // Switch VC channels
-  if (oldState.channel && newState.channel && oldState.channel.id !== newState.channel.id) {
-    vcJoinTimes[memberId] = Date.now();
+  // Member left VC
+  if (oldState.channel && !newState.channel) {
+    const joinedAt = vcJoinTimes[member.id];
+    if (joinedAt) {
+      const diffMinutes = Math.floor((Date.now() - joinedAt) / 60000);
+      if (!voiceLB[member.id]) voiceLB[member.id] = { tag: member.user.tag, voiceMinutes: 0 };
+      voiceLB[member.id].voiceMinutes += diffMinutes;
+      delete vcJoinTimes[member.id];
+      saveLB();
+    }
   }
 });
 
-// Increment voice minutes every minute for members still in VC
-setInterval(() => {
-  for (const memberId in vcJoinTimes) {
-    if (!voiceLB[memberId]) continue;
-    voiceLB[memberId].voiceMinutes += 1;
-  }
-  saveLB();
-}, 60 * 1000);
-
-// ===== Auto-update leaderboard every 5 minutes =====
+// ===== Auto-update every 5 minutes =====
 setInterval(() => {
   client.guilds.cache.forEach(guild => {
     if (guild.id !== ALLOWED_GUILD) return;
-
-    if (messageLBChannel) {
-      const msgChannel = guild.channels.cache.get(messageLBChannel);
-      if (msgChannel) sendLeaderboardEmbed(msgChannel, messageLB, "messages");
-    }
-    if (voiceLBChannel) {
-      const vcChannel = guild.channels.cache.get(voiceLBChannel);
-      if (vcChannel) sendLeaderboardEmbed(vcChannel, voiceLB, "voice");
-    }
+    if (messageLBChannel) sendLeaderboardEmbed(guild.channels.cache.get(messageLBChannel), messageLB, "messages");
+    if (voiceLBChannel) sendLeaderboardEmbed(guild.channels.cache.get(voiceLBChannel), voiceLB, "voice");
   });
 }, 5 * 60 * 1000);
-
-// ===== Leave unauthorized servers =====
-client.on("guildCreate", guild => {
-  if (guild.id !== ALLOWED_GUILD) {
-    guild.leave()
-      .then(() => console.log(`Left unauthorized server: ${guild.name}`))
-      .catch(console.error);
-  }
-});
 
 // ===== Keep Alive (Render-friendly) =====
 const app = express();
