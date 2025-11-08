@@ -37,6 +37,8 @@ let messageLB = {};
 let voiceLB = {};
 let messageLBChannel;
 let voiceLBChannel;
+let messageLBMessageId;
+let voiceLBMessageId;
 const vcJoinTimes = {}; // Track members currently in VC
 
 if (fs.existsSync(MESSAGE_LB_FILE)) messageLB = JSON.parse(fs.readFileSync(MESSAGE_LB_FILE));
@@ -74,9 +76,6 @@ async function sendLeaderboardEmbed(channel, usersData, type) {
 
   const description = generateLeaderboardDescription(sorted, type);
 
-  const messages = await channel.messages.fetch({ limit: 50 });
-  let lbMessage = messages.find(m => m.author.id === client.user.id && m.embeds.length > 0);
-
   const embed = new EmbedBuilder()
     .setAuthor({ name: channel.guild.name, iconURL: channel.guild.iconURL() })
     .setTitle(type === "messages" ? "Message Leaderboard" : "Voice Leaderboard")
@@ -84,10 +83,24 @@ async function sendLeaderboardEmbed(channel, usersData, type) {
     .setColor("#FFB6C1") // light pink
     .setDescription(description + `\n<a:white_butterflies:1436478933339213895> **Updates every 5 minutes**`);
 
+  // Track message ID to prevent duplicates
+  let lbMessageId = type === "messages" ? messageLBMessageId : voiceLBMessageId;
+  let lbMessage;
+
+  if (lbMessageId) {
+    try {
+      lbMessage = await channel.messages.fetch(lbMessageId);
+    } catch {
+      lbMessage = null;
+    }
+  }
+
   if (lbMessage) {
     await lbMessage.edit({ embeds: [embed] });
   } else {
-    await channel.send({ embeds: [embed] });
+    lbMessage = await channel.send({ embeds: [embed] });
+    if (type === "messages") messageLBMessageId = lbMessage.id;
+    else voiceLBMessageId = lbMessage.id;
   }
 }
 
