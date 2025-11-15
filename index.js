@@ -13,10 +13,16 @@ const client = new Client({
 });
 
 // ===== Config =====
-const TOKEN = process.env.TOKEN; // Set this in Render environment
+const TOKEN = process.env.TOKEN;
+
+// Allow 2 servers ONLY
+const ALLOWED_GUILDS = [
+  "1426789471776542803",   // your main server
+  "1374764635579879605"    // second server you added
+];
+
 const MESSAGE_LB_FILE = "./database/messages.json";
 const VOICE_LB_FILE = "./database/voice.json";
-const ALLOWED_GUILD = "1426789471776542803";
 
 // ===== Custom emojis =====
 const numberEmojis = [
@@ -53,42 +59,45 @@ function saveLB() {
 function generateLeaderboardDescription(topUsers, type) {
   if (!topUsers || topUsers.length === 0) return "No data yet.";
 
-  return topUsers.map((u, i) => {
-    let emoji = "";
-    if (i === 9) {
-      // 10th place = 1 + 0 emojis
-      emoji = "<a:vnumber1:1433892245978742845><a:vnumber0:1433892272478350090>";
-    } else {
-      emoji = numberEmojis[i];
-    }
+  return topUsers
+    .map((u, i) => {
+      let emoji = "";
+      if (i === 9) {
+        emoji = "<a:vnumber1:1433892245978742845><a:vnumber0:1433892272478350090>";
+      } else {
+        emoji = numberEmojis[i];
+      }
 
-    const separator = type === "messages" ? arrowEmoji : arrowEmoji;
-    const value = type === "messages" ? `${u.messages} messages` : `${u.voiceMinutes} mins`;
-
-    return `${emoji} \`${u.tag}\` ${separator} ${value}`;
-  }).join("\n");
+      const value = type === "messages" ? `${u.messages} messages` : `${u.voiceMinutes} mins`;
+      return `${emoji} \`${u.tag}\` ${arrowEmoji} ${value}`;
+    })
+    .join("\n");
 }
 
 // ===== Post or update leaderboard embed =====
 async function sendLeaderboardEmbed(channel, usersData, type) {
   const now = Date.now();
 
-  // Update voice minutes for users currently in VC
+  // Update voice minutes for users still in VC
   if (type === "voice") {
     for (const memberId in vcJoinTimes) {
       const joinedAt = vcJoinTimes[memberId];
       const diffMinutes = Math.floor((now - joinedAt) / 60000);
+
       if (!usersData[memberId]) {
         usersData[memberId] = { tag: "Unknown", voiceMinutes: 0 };
       }
+
       usersData[memberId].voiceMinutes += diffMinutes;
-      vcJoinTimes[memberId] = now; // reset timestamp
+      vcJoinTimes[memberId] = now;
     }
     saveLB();
   }
 
   const sorted = Object.values(usersData)
-    .sort((a, b) => (type === "messages" ? b.messages - a.messages : b.voiceMinutes - a.voiceMinutes))
+    .sort((a, b) =>
+      type === "messages" ? b.messages - a.messages : b.voiceMinutes - a.voiceMinutes
+    )
     .slice(0, 10);
 
   const description = generateLeaderboardDescription(sorted, type);
@@ -100,7 +109,6 @@ async function sendLeaderboardEmbed(channel, usersData, type) {
     .setColor("#FFB6C1")
     .setDescription(description + `\n<a:white_butterflies:1436478933339213895> **Updates every 5 minutes**`);
 
-  // Track message ID to prevent duplicates
   let lbMessageId = type === "messages" ? messageLBMessageId : voiceLBMessageId;
   let lbMessage;
 
@@ -124,7 +132,7 @@ async function sendLeaderboardEmbed(channel, usersData, type) {
 // ===== Commands =====
 client.on("messageCreate", async (message) => {
   if (!message.guild || message.author.bot) return;
-  if (message.guild.id !== ALLOWED_GUILD) return; // whitelist
+  if (!ALLOWED_GUILDS.includes(message.guild.id)) return;
 
   const prefix = "+";
   if (!message.content.startsWith(prefix)) return;
@@ -147,32 +155,38 @@ client.on("messageCreate", async (message) => {
 });
 
 // ===== Track messages =====
-client.on("messageCreate", message => {
+client.on("messageCreate", (message) => {
   if (!message.guild || message.author.bot) return;
-  if (message.guild.id !== ALLOWED_GUILD) return;
+  if (!ALLOWED_GUILDS.includes(message.guild.id)) return;
 
-  if (!messageLB[message.author.id]) messageLB[message.author.id] = { tag: message.author.tag, messages: 0 };
+  if (!messageLB[message.author.id])
+    messageLB[message.author.id] = { tag: message.author.tag, messages: 0 };
+
   messageLB[message.author.id].messages += 1;
   saveLB();
 });
 
 // ===== Track voice =====
 client.on("voiceStateUpdate", (oldState, newState) => {
-  if (!newState.guild || newState.guild.id !== ALLOWED_GUILD) return;
+  if (!newState.guild || !ALLOWED_GUILDS.includes(newState.guild.id)) return;
+
   const member = newState.member;
   if (!member) return;
 
-  // Member joined VC
+  // Joined VC
   if (!oldState.channel && newState.channel) {
     vcJoinTimes[member.id] = Date.now();
   }
 
-  // Member left VC
+  // Left VC
   if (oldState.channel && !newState.channel) {
     const joinedAt = vcJoinTimes[member.id];
     if (joinedAt) {
       const diffMinutes = Math.floor((Date.now() - joinedAt) / 60000);
-      if (!voiceLB[member.id]) voiceLB[member.id] = { tag: member.user.tag, voiceMinutes: 0 };
+
+      if (!voiceLB[member.id])
+        voiceLB[member.id] = { tag: member.user.tag, voiceMinutes: 0 };
+
       voiceLB[member.id].voiceMinutes += diffMinutes;
       delete vcJoinTimes[member.id];
       saveLB();
@@ -182,10 +196,14 @@ client.on("voiceStateUpdate", (oldState, newState) => {
 
 // ===== Auto-update every 5 minutes =====
 setInterval(() => {
-  client.guilds.cache.forEach(guild => {
-    if (guild.id !== ALLOWED_GUILD) return;
-    if (messageLBChannel) sendLeaderboardEmbed(guild.channels.cache.get(messageLBChannel), messageLB, "messages");
-    if (voiceLBChannel) sendLeaderboardEmbed(guild.channels.cache.get(voiceLBChannel), voiceLB, "voice");
+  client.guilds.cache.forEach((guild) => {
+    if (!ALLOWED_GUILDS.includes(guild.id)) return;
+
+    if (messageLBChannel)
+      sendLeaderboardEmbed(guild.channels.cache.get(messageLBChannel), messageLB, "messages");
+
+    if (voiceLBChannel)
+      sendLeaderboardEmbed(guild.channels.cache.get(voiceLBChannel), voiceLB, "voice");
   });
 }, 5 * 60 * 1000);
 
